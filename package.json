@@ -1,0 +1,24 @@
+{
+  "name": "psytools-server-express",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=16.20.0"
+  },
+  "scripts": {
+    "start": "node ./bin/www"
+  },
+  "dependencies": {
+    "cookie-parser": "~1.4.4",
+    "cors": "^2.8.5",
+    "debug": "~2.6.9",
+    "dotenv": "^16.3.1",
+    "express": "^4.19.2",
+    "http-errors": "~1.6.3",
+    "morgan": "~1.9.1",
+    "node-postgres": "^0.6.2",
+    "passport-auth-token": "^1.0.1",
+    "pg": "^8.12.0",
+    "validate-azure-ad-token": "^2.2.0"
+  }
+}
