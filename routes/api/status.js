@@ -212,7 +212,7 @@ router.get("/", async (req, res) => {
                 'used_in_period', SUM(recent_instances_used)
               )
             ),
-            'by_study', json_agg(json_build_object(
+            'by_study', COALESCE(json_agg(json_build_object(
               'study_id', study_id,
               'users', json_build_object(
                 'total', total_users,
@@ -235,7 +235,7 @@ router.get("/", async (req, res) => {
                 'total_used', total_instances_used,
                 'used_in_period', recent_instances_used
               )
-            ))
+            )), '[]'::json)
           ) as stats
         FROM study_metrics
       `;

@@ -85,7 +85,7 @@ router.get("/", async (req, res) => {
           COALESCE(MAX(utl.submission_time), NULL) as last_submission,
           COUNT(DISTINCT utl.task_log_id) as completed_tasks,
           COUNT(DISTINCT ut.task_id) as assigned_tasks,
-          array_agg(DISTINCT utl.task_log_id) FILTER (WHERE utl.task_log_id IS NOT NULL) as completed_task_ids
+          COALESCE(array_agg(DISTINCT utl.task_log_id) FILTER (WHERE utl.task_log_id IS NOT NULL), ARRAY[]::integer[]) as completed_task_ids
         FROM fw_psy_user u
         LEFT JOIN fw_psy_user_task ut ON u.user_id = ut.user_id
         LEFT JOIN fw_psy_user_task_log utl ON ut.user_task_id = utl.user_task_id
