@@ -252,12 +252,13 @@ router.get("/", async (req, res) => {
       const submissionsMap = {};
 
       // Process each study individually
-      for (const study of stats.by_study) {
-        const studyId = study.study_id;
+      if (stats.by_study) {
+        for (const study of stats.by_study) {
+          const studyId = study.study_id;
 
-        try {
-          // Get date range for this study
-          const dateRangeQuery = `
+          try {
+            // Get date range for this study
+            const dateRangeQuery = `
             SELECT 
               MIN(utl.submission_time) as earliest_date,
               MAX(utl.submission_time) as latest_date,
@@ -268,33 +269,33 @@ router.get("/", async (req, res) => {
             WHERE u.study_id = $1
           `;
 
-          const dateRangeResult = await pool.query(dateRangeQuery, [studyId]);
+            const dateRangeResult = await pool.query(dateRangeQuery, [studyId]);
 
-          if (dateRangeResult.rows.length > 0) {
-            const row = dateRangeResult.rows[0];
-            let timeAggregation = "day";
-            const dateRangeDays = parseFloat(row.date_range_days || 0);
+            if (dateRangeResult.rows.length > 0) {
+              const row = dateRangeResult.rows[0];
+              let timeAggregation = "day";
+              const dateRangeDays = parseFloat(row.date_range_days || 0);
 
-            // Determine appropriate aggregation based on date range
-            if (dateRangeDays > 365) {
-              timeAggregation = "month";
-            } else if (dateRangeDays > 60) {
-              timeAggregation = "week";
-            }
+              // Determine appropriate aggregation based on date range
+              if (dateRangeDays > 365) {
+                timeAggregation = "month";
+              } else if (dateRangeDays > 60) {
+                timeAggregation = "week";
+              }
 
-            studyAggregationMap[studyId] = {
-              timeAggregation,
-              dateRangeDays,
-              earliestDate: row.earliest_date,
-              latestDate: row.latest_date,
-            };
+              studyAggregationMap[studyId] = {
+                timeAggregation,
+                dateRangeDays,
+                earliestDate: row.earliest_date,
+                latestDate: row.latest_date,
+              };
 
-            console.log(
-              `Study ${studyId} has date range of ${dateRangeDays} days, using ${timeAggregation} aggregation`
-            );
+              console.log(
+                `Study ${studyId} has date range of ${dateRangeDays} days, using ${timeAggregation} aggregation`
+              );
 
-            // Get submissions data with appropriate aggregation
-            const submissionsQuery = `
+              // Get submissions data with appropriate aggregation
+              const submissionsQuery = `
               SELECT 
                 DATE_TRUNC('${timeAggregation}', utl.submission_time)::date as aggregated_date,
                 COUNT(DISTINCT utl.task_log_id) as submission_count
@@ -306,22 +307,32 @@ router.get("/", async (req, res) => {
               ORDER BY aggregated_date
             `;
 
-            const submissionsResult = await pool.query(submissionsQuery, [
-              studyId,
-            ]);
+              const submissionsResult = await pool.query(submissionsQuery, [
+                studyId,
+              ]);
 
-            // Format the submissions data
-            submissionsMap[studyId] = submissionsResult.rows.map((row) => ({
-              date: row.aggregated_date,
-              count: parseInt(row.submission_count),
-              aggregation: timeAggregation,
-            }));
+              // Format the submissions data
+              submissionsMap[studyId] = submissionsResult.rows.map((row) => ({
+                date: row.aggregated_date,
+                count: parseInt(row.submission_count),
+                aggregation: timeAggregation,
+              }));
 
-            console.log(
-              `Study ${studyId} submissions data:`,
-              JSON.stringify(submissionsMap[studyId])
-            );
-          } else {
+              console.log(
+                `Study ${studyId} submissions data:`,
+                JSON.stringify(submissionsMap[studyId])
+              );
+            } else {
+              studyAggregationMap[studyId] = {
+                timeAggregation: "day",
+                dateRangeDays: 0,
+                earliestDate: null,
+                latestDate: null,
+              };
+              submissionsMap[studyId] = [];
+            }
+          } catch (studyError) {
+            console.error(`Error processing study ${studyId}:`, studyError);
             studyAggregationMap[studyId] = {
               timeAggregation: "day",
               dateRangeDays: 0,
@@ -330,15 +341,6 @@ router.get("/", async (req, res) => {
             };
             submissionsMap[studyId] = [];
           }
-        } catch (studyError) {
-          console.error(`Error processing study ${studyId}:`, studyError);
-          studyAggregationMap[studyId] = {
-            timeAggregation: "day",
-            dateRangeDays: 0,
-            earliestDate: null,
-            latestDate: null,
-          };
-          submissionsMap[studyId] = [];
         }
       }
 
