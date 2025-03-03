@@ -135,6 +135,9 @@ router.get("/", async (req, res) => {
     console.log("Updated access clause:", updatedAccessClause);
     console.log("Parameters:", params);
 
+    // Declare stats variable at a higher scope
+    let stats = null;
+
     try {
       // Build the basic metrics query - PostgreSQL 9.6 compatible
       const basicMetricsQuery = `
@@ -241,7 +244,6 @@ router.get("/", async (req, res) => {
           ) as stats
       `;
 
-      // Execute the basic metrics query
       try {
         console.log(
           "Executing basic metrics query with params:",
@@ -250,14 +252,80 @@ router.get("/", async (req, res) => {
         const basicMetricsResult = await pool.query(basicMetricsQuery, params);
         console.log("Basic metrics query executed successfully");
 
+        // Check if we have results
+        if (!basicMetricsResult.rows || basicMetricsResult.rows.length === 0) {
+          console.log("Query returned no rows");
+          return res.json({
+            success: true,
+            data: {
+              overall: {
+                users: { total: 0, active_in_period: 0 },
+                tasks: { assigned: 0, enabled: 0 },
+                activity: {
+                  total_submissions: 0,
+                  submissions_in_period: 0,
+                  avg_submission_lag_seconds: 0,
+                  avg_processing_time_seconds: 0,
+                },
+                task_instances: { total_used: 0, used_in_period: 0 },
+              },
+              by_study: [],
+              period_days: days,
+              cutoff_date: cutoffDate.toISOString(),
+              time_aggregation: "day",
+            },
+          });
+        }
+
         // Get the basic stats
-        const stats = basicMetricsResult.rows[0].stats;
+        stats = basicMetricsResult.rows[0].stats;
+
+        // Check if stats is null or undefined
+        if (!stats) {
+          console.log("Stats is null or undefined in the query result");
+          return res.json({
+            success: true,
+            data: {
+              overall: {
+                users: { total: 0, active_in_period: 0 },
+                tasks: { assigned: 0, enabled: 0 },
+                activity: {
+                  total_submissions: 0,
+                  submissions_in_period: 0,
+                  avg_submission_lag_seconds: 0,
+                  avg_processing_time_seconds: 0,
+                },
+                task_instances: { total_used: 0, used_in_period: 0 },
+              },
+              by_study: [],
+              period_days: days,
+              cutoff_date: cutoffDate.toISOString(),
+              time_aggregation: "day",
+            },
+          });
+        }
 
         // Log the stats object for debugging
         console.log("Stats object type:", typeof stats);
         console.log("Stats by_study type:", typeof stats.by_study);
         console.log("Stats by_study is array:", Array.isArray(stats.by_study));
         console.log("Stats by_study value:", JSON.stringify(stats.by_study));
+
+        // Check if overall stats are missing
+        if (!stats.overall) {
+          console.log("Stats.overall is missing, creating default");
+          stats.overall = {
+            users: { total: 0, active_in_period: 0 },
+            tasks: { assigned: 0, enabled: 0 },
+            activity: {
+              total_submissions: 0,
+              submissions_in_period: 0,
+              avg_submission_lag_seconds: 0,
+              avg_processing_time_seconds: 0,
+            },
+            task_instances: { total_used: 0, used_in_period: 0 },
+          };
+        }
       } catch (queryError) {
         console.error("Error executing basic metrics query:", queryError);
         console.error("SQL Query:", basicMetricsQuery);
@@ -271,6 +339,15 @@ router.get("/", async (req, res) => {
         });
       }
 
+      // Check if stats is null (query failed)
+      if (!stats) {
+        console.error("Stats object is null, cannot proceed");
+        return res.status(500).json({
+          success: false,
+          error: "Failed to retrieve statistics data",
+        });
+      }
+
       // Add this check before iterating over stats.by_study
       if (!stats.by_study || !Array.isArray(stats.by_study)) {
         console.log(
@@ -278,6 +355,23 @@ router.get("/", async (req, res) => {
           JSON.stringify(stats)
         );
         stats.by_study = []; // Convert to empty array to prevent errors
+      }
+
+      // If by_study is empty, we can skip the individual study processing
+      if (stats.by_study.length === 0) {
+        console.log("No studies found, skipping individual study processing");
+
+        // Send the response with empty by_study
+        return res.json({
+          success: true,
+          data: {
+            overall: stats.overall,
+            by_study: [],
+            period_days: days,
+            cutoff_date: cutoffDate.toISOString(),
+            time_aggregation: "day",
+          },
+        });
       }
 
       // Now determine date ranges and appropriate aggregation for each study
