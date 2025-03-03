@@ -247,6 +247,15 @@ router.get("/", async (req, res) => {
       // Get the basic stats
       const stats = basicMetricsResult.rows[0].stats;
 
+      // Add this check before iterating over stats.by_study
+      if (!stats.by_study || typeof stats.by_study !== "object") {
+        console.log(
+          "Warning: stats.by_study is not iterable:",
+          basicMetricsResult
+        );
+        stats.by_study = []; // Convert to empty array to prevent errors
+      }
+
       // Now determine date ranges and appropriate aggregation for each study
       const studyAggregationMap = {};
       const submissionsMap = {};
