@@ -132,10 +132,18 @@ const validateDataAccessToken = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
+    // Add clock tolerance of 60 seconds to allow for small time differences between servers
+    const verifyOptions = {
+      clockTolerance: 60, // Allow 60 seconds of clock skew
+    };
+
+    const decoded = jwt.verify(token, config.jwt.secret, verifyOptions);
     console.log("JWT decoded successfully:", {
       userId: decoded.userId,
       studyAccessCount: decoded.studyAccess?.length || 0,
+      iat: decoded.iat ? new Date(decoded.iat * 1000).toISOString() : "none",
+      exp: decoded.exp ? new Date(decoded.exp * 1000).toISOString() : "none",
+      currentTime: new Date().toISOString(),
     });
 
     // Validate required claims
