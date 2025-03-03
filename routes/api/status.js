@@ -136,128 +136,141 @@ router.get("/", async (req, res) => {
     console.log("Parameters:", params);
 
     try {
-      // First, get the basic metrics for each study
+      // Build the basic metrics query - PostgreSQL 9.6 compatible
       const basicMetricsQuery = `
         WITH study_metrics AS (
-          SELECT 
+          SELECT
             u.study_id,
-            -- Basic user counts
             COUNT(DISTINCT u.user_id) as total_users,
-            COUNT(DISTINCT CASE 
-              WHEN utl.submission_time >= $1 THEN u.user_id 
-            END) as active_users,
-            
-            -- Task assignments
-            COUNT(DISTINCT ut.task_id) as assigned_tasks,
-            COUNT(DISTINCT CASE 
-              WHEN ut.enabled = true THEN ut.task_id 
-            END) as enabled_tasks,
-            
-            -- Submission counts
-            COUNT(DISTINCT utl.task_log_id) as total_submissions,
-            COUNT(DISTINCT CASE 
-              WHEN utl.submission_time >= $1 THEN utl.task_log_id 
-            END) as recent_submissions,
-            
-            -- Task instances
-            COUNT(DISTINCT utl.task_instance_id) as total_instances_used,
-            COUNT(DISTINCT CASE 
-              WHEN utl.submission_time >= $1 THEN utl.task_instance_id 
-            END) as recent_instances_used,
-            
-            -- Timing metrics (in seconds)
-            ROUND(AVG(
-              CASE 
-                WHEN utl.submission_time >= $1 
-                THEN EXTRACT(EPOCH FROM (utl.submission_time - utl.user_completion_time))
-              END
-            )::numeric, 2) as avg_submission_lag_seconds,
-            
-            ROUND(AVG(
-              CASE 
-                WHEN utl.submission_time >= $1 AND utl.processed_time IS NOT NULL
-                THEN EXTRACT(EPOCH FROM (utl.processed_time - utl.submission_time))
-              END
-            )::numeric, 2) as avg_processing_time_seconds,
-            
-            -- Activity timestamps
+            COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN u.user_id ELSE NULL END) as active_users,
+            COUNT(DISTINCT ut.user_task_id) as assigned_tasks,
+            COUNT(DISTINCT CASE WHEN ut.enabled = true THEN ut.user_task_id ELSE NULL END) as enabled_tasks,
+            COUNT(utl.user_task_log_id) as total_submissions,
+            COUNT(CASE WHEN utl.submission_time >= $1 THEN utl.user_task_log_id ELSE NULL END) as recent_submissions,
+            ROUND(AVG(EXTRACT(EPOCH FROM (utl.submission_time - ut.assigned_time)))::numeric, 2) as avg_submission_lag_seconds,
+            ROUND(AVG(EXTRACT(EPOCH FROM (utl.processing_time - utl.submission_time)))::numeric, 2) as avg_processing_time_seconds,
             MAX(utl.submission_time) as latest_submission,
             MIN(utl.submission_time) as earliest_submission,
-            MAX(utl.processed_time) as latest_processing
-          FROM fw_psy_user u
+            MAX(utl.processing_time) as latest_processing,
+            COUNT(DISTINCT uti.user_task_instance_id) as total_instances_used,
+            COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN uti.user_task_instance_id ELSE NULL END) as recent_instances_used
+          FROM
+            fw_psy_user u
           LEFT JOIN fw_psy_user_task ut ON u.user_id = ut.user_id
           LEFT JOIN fw_psy_user_task_log utl ON ut.user_task_id = utl.user_task_id
+          LEFT JOIN fw_psy_user_task_instance uti ON utl.user_task_instance_id = uti.user_task_instance_id
           ${updatedAccessClause}
           GROUP BY u.study_id
-        )
-        SELECT 
-          json_build_object(
-            'overall', json_build_object(
+        ),
+        overall_metrics AS (
+          SELECT
+            SUM(total_users) as total_users,
+            SUM(active_users) as active_users,
+            SUM(assigned_tasks) as assigned_tasks,
+            SUM(enabled_tasks) as enabled_tasks,
+            SUM(total_submissions) as total_submissions,
+            SUM(recent_submissions) as recent_submissions,
+            ROUND(AVG(avg_submission_lag_seconds)::numeric, 2) as avg_submission_lag_seconds,
+            ROUND(AVG(avg_processing_time_seconds)::numeric, 2) as avg_processing_time_seconds,
+            SUM(total_instances_used) as total_instances_used,
+            SUM(recent_instances_used) as recent_instances_used
+          FROM study_metrics
+        ),
+        study_json AS (
+          SELECT
+            CASE 
+              WHEN (SELECT COUNT(*) FROM study_metrics) = 0 THEN '[]'::json
+              ELSE COALESCE(
+                (SELECT json_agg(
+                  json_build_object(
+                    'study_id', study_id,
+                    'users', json_build_object(
+                      'total', total_users,
+                      'active_in_period', active_users
+                    ),
+                    'tasks', json_build_object(
+                      'assigned', assigned_tasks,
+                      'enabled', enabled_tasks
+                    ),
+                    'activity', json_build_object(
+                      'total_submissions', total_submissions,
+                      'submissions_in_period', recent_submissions,
+                      'avg_submission_lag_seconds', avg_submission_lag_seconds,
+                      'avg_processing_time_seconds', avg_processing_time_seconds,
+                      'latest_submission', latest_submission,
+                      'earliest_submission', earliest_submission,
+                      'latest_processing', latest_processing
+                    ),
+                    'task_instances', json_build_object(
+                      'total_used', total_instances_used,
+                      'used_in_period', recent_instances_used
+                    )
+                  )
+                ) FROM study_metrics),
+                '[]'::json
+              )
+            END as by_study
+        ),
+        overall_json AS (
+          SELECT
+            json_build_object(
               'users', json_build_object(
-                'total', SUM(total_users),
-                'active_in_period', SUM(active_users)
+                'total', total_users,
+                'active_in_period', active_users
               ),
               'tasks', json_build_object(
-                'assigned', SUM(assigned_tasks),
-                'enabled', SUM(enabled_tasks)
+                'assigned', assigned_tasks,
+                'enabled', enabled_tasks
               ),
               'activity', json_build_object(
-                'total_submissions', SUM(total_submissions),
-                'submissions_in_period', SUM(recent_submissions),
-                'avg_submission_lag_seconds', ROUND(AVG(avg_submission_lag_seconds)::numeric, 2),
-                'avg_processing_time_seconds', ROUND(AVG(avg_processing_time_seconds)::numeric, 2)
+                'total_submissions', total_submissions,
+                'submissions_in_period', recent_submissions,
+                'avg_submission_lag_seconds', avg_submission_lag_seconds,
+                'avg_processing_time_seconds', avg_processing_time_seconds
               ),
               'task_instances', json_build_object(
-                'total_used', SUM(total_instances_used),
-                'used_in_period', SUM(recent_instances_used)
+                'total_used', total_instances_used,
+                'used_in_period', recent_instances_used
               )
-            ),
-            'by_study', COALESCE(
-              CASE 
-                WHEN COUNT(*) = 0 THEN '[]'::json
-                ELSE json_agg(json_build_object(
-                  'study_id', study_id,
-                  'users', json_build_object(
-                    'total', total_users,
-                    'active_in_period', active_users
-                  ),
-                  'tasks', json_build_object(
-                    'assigned', assigned_tasks,
-                    'enabled', enabled_tasks
-                  ),
-                  'activity', json_build_object(
-                    'total_submissions', total_submissions,
-                    'submissions_in_period', recent_submissions,
-                    'avg_submission_lag_seconds', avg_submission_lag_seconds,
-                    'avg_processing_time_seconds', avg_processing_time_seconds,
-                    'latest_submission', latest_submission,
-                    'earliest_submission', earliest_submission,
-                    'latest_processing', latest_processing
-                  ),
-                  'task_instances', json_build_object(
-                    'total_used', total_instances_used,
-                    'used_in_period', recent_instances_used
-                  )
-                ))
-              END,
-              '[]'::json
-            )
+            ) as overall
+          FROM overall_metrics
+        )
+        SELECT
+          json_build_object(
+            'overall', (SELECT overall FROM overall_json),
+            'by_study', (SELECT by_study FROM study_json)
           ) as stats
-        FROM study_metrics
       `;
 
       // Execute the basic metrics query
-      const basicMetricsResult = await pool.query(basicMetricsQuery, params);
-      console.log("Basic metrics query executed successfully");
+      try {
+        console.log(
+          "Executing basic metrics query with params:",
+          JSON.stringify(params)
+        );
+        const basicMetricsResult = await pool.query(basicMetricsQuery, params);
+        console.log("Basic metrics query executed successfully");
 
-      // Get the basic stats
-      const stats = basicMetricsResult.rows[0].stats;
+        // Get the basic stats
+        const stats = basicMetricsResult.rows[0].stats;
 
-      // Log the stats object for debugging
-      console.log("Stats object type:", typeof stats);
-      console.log("Stats by_study type:", typeof stats.by_study);
-      console.log("Stats by_study is array:", Array.isArray(stats.by_study));
-      console.log("Stats by_study value:", JSON.stringify(stats.by_study));
+        // Log the stats object for debugging
+        console.log("Stats object type:", typeof stats);
+        console.log("Stats by_study type:", typeof stats.by_study);
+        console.log("Stats by_study is array:", Array.isArray(stats.by_study));
+        console.log("Stats by_study value:", JSON.stringify(stats.by_study));
+      } catch (queryError) {
+        console.error("Error executing basic metrics query:", queryError);
+        console.error("SQL Query:", basicMetricsQuery);
+        console.error("Params:", JSON.stringify(params));
+
+        // Return a more detailed error response
+        return res.status(500).json({
+          success: false,
+          error: "Database query error",
+          details: queryError.message,
+        });
+      }
 
       // Add this check before iterating over stats.by_study
       if (!stats.by_study || !Array.isArray(stats.by_study)) {
@@ -290,35 +303,34 @@ router.get("/", async (req, res) => {
           `;
 
           const dateRangeResult = await pool.query(dateRangeQuery, [studyId]);
+          const dateRange = dateRangeResult.rows[0];
 
-          if (dateRangeResult.rows.length > 0) {
-            const row = dateRangeResult.rows[0];
-            let timeAggregation = "day";
-            const dateRangeDays = parseFloat(row.date_range_days || 0);
-
-            // Determine appropriate aggregation based on date range
-            if (dateRangeDays > 365) {
+          // Determine appropriate time aggregation based on date range
+          let timeAggregation = "day";
+          if (
+            dateRange.date_range_days !== null &&
+            dateRange.earliest_date !== null &&
+            dateRange.latest_date !== null
+          ) {
+            const rangeDays = parseFloat(dateRange.date_range_days);
+            if (rangeDays > 90) {
               timeAggregation = "month";
-            } else if (dateRangeDays > 60) {
+            } else if (rangeDays > 30) {
               timeAggregation = "week";
             }
 
             studyAggregationMap[studyId] = {
               timeAggregation,
-              dateRangeDays,
-              earliestDate: row.earliest_date,
-              latestDate: row.latest_date,
+              dateRangeDays: rangeDays,
+              earliestDate: dateRange.earliest_date,
+              latestDate: dateRange.latest_date,
             };
 
-            console.log(
-              `Study ${studyId} has date range of ${dateRangeDays} days, using ${timeAggregation} aggregation`
-            );
-
-            // Get submissions data with appropriate aggregation
+            // Get submissions by day/week/month for this study
             const submissionsQuery = `
               SELECT 
                 DATE_TRUNC('${timeAggregation}', utl.submission_time)::date as aggregated_date,
-                COUNT(DISTINCT utl.task_log_id) as submission_count
+                COUNT(*) as submission_count
               FROM fw_psy_user_task_log utl
               JOIN fw_psy_user_task ut ON utl.user_task_id = ut.user_task_id
               JOIN fw_psy_user u ON ut.user_id = u.user_id
