@@ -143,22 +143,21 @@ router.get("/", async (req, res) => {
             u.study_id,
             COUNT(DISTINCT u.user_id) as total_users,
             COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN u.user_id ELSE NULL END) as active_users,
-            COUNT(DISTINCT ut.user_task_id) as assigned_tasks,
-            COUNT(DISTINCT CASE WHEN ut.enabled = true THEN ut.user_task_id ELSE NULL END) as enabled_tasks,
-            COUNT(utl.user_task_log_id) as total_submissions,
-            COUNT(CASE WHEN utl.submission_time >= $1 THEN utl.user_task_log_id ELSE NULL END) as recent_submissions,
-            ROUND(AVG(EXTRACT(EPOCH FROM (utl.submission_time - ut.assigned_time)))::numeric, 2) as avg_submission_lag_seconds,
-            ROUND(AVG(EXTRACT(EPOCH FROM (utl.processing_time - utl.submission_time)))::numeric, 2) as avg_processing_time_seconds,
+            COUNT(DISTINCT ut.task_id) as assigned_tasks,
+            COUNT(DISTINCT CASE WHEN ut.enabled = true THEN ut.task_id ELSE NULL END) as enabled_tasks,
+            COUNT(DISTINCT utl.task_log_id) as total_submissions,
+            COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN utl.task_log_id ELSE NULL END) as recent_submissions,
+            ROUND(AVG(EXTRACT(EPOCH FROM (utl.submission_time - utl.user_completion_time)))::numeric, 2) as avg_submission_lag_seconds,
+            ROUND(AVG(EXTRACT(EPOCH FROM (utl.processed_time - utl.submission_time)))::numeric, 2) as avg_processing_time_seconds,
             MAX(utl.submission_time) as latest_submission,
             MIN(utl.submission_time) as earliest_submission,
-            MAX(utl.processing_time) as latest_processing,
-            COUNT(DISTINCT uti.user_task_instance_id) as total_instances_used,
-            COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN uti.user_task_instance_id ELSE NULL END) as recent_instances_used
+            MAX(utl.processed_time) as latest_processing,
+            COUNT(DISTINCT utl.task_instance_id) as total_instances_used,
+            COUNT(DISTINCT CASE WHEN utl.submission_time >= $1 THEN utl.task_instance_id ELSE NULL END) as recent_instances_used
           FROM
             fw_psy_user u
           LEFT JOIN fw_psy_user_task ut ON u.user_id = ut.user_id
           LEFT JOIN fw_psy_user_task_log utl ON ut.user_task_id = utl.user_task_id
-          LEFT JOIN fw_psy_user_task_instance uti ON utl.user_task_instance_id = uti.user_task_instance_id
           ${updatedAccessClause}
           GROUP BY u.study_id
         ),
