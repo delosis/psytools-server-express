@@ -212,30 +212,36 @@ router.get("/", async (req, res) => {
                 'used_in_period', SUM(recent_instances_used)
               )
             ),
-            'by_study', COALESCE(json_agg(json_build_object(
-              'study_id', study_id,
-              'users', json_build_object(
-                'total', total_users,
-                'active_in_period', active_users
-              ),
-              'tasks', json_build_object(
-                'assigned', assigned_tasks,
-                'enabled', enabled_tasks
-              ),
-              'activity', json_build_object(
-                'total_submissions', total_submissions,
-                'submissions_in_period', recent_submissions,
-                'avg_submission_lag_seconds', avg_submission_lag_seconds,
-                'avg_processing_time_seconds', avg_processing_time_seconds,
-                'latest_submission', latest_submission,
-                'earliest_submission', earliest_submission,
-                'latest_processing', latest_processing
-              ),
-              'task_instances', json_build_object(
-                'total_used', total_instances_used,
-                'used_in_period', recent_instances_used
-              )
-            )), '[]'::json)
+            'by_study', COALESCE(
+              CASE 
+                WHEN COUNT(*) = 0 THEN '[]'::json
+                ELSE json_agg(json_build_object(
+                  'study_id', study_id,
+                  'users', json_build_object(
+                    'total', total_users,
+                    'active_in_period', active_users
+                  ),
+                  'tasks', json_build_object(
+                    'assigned', assigned_tasks,
+                    'enabled', enabled_tasks
+                  ),
+                  'activity', json_build_object(
+                    'total_submissions', total_submissions,
+                    'submissions_in_period', recent_submissions,
+                    'avg_submission_lag_seconds', avg_submission_lag_seconds,
+                    'avg_processing_time_seconds', avg_processing_time_seconds,
+                    'latest_submission', latest_submission,
+                    'earliest_submission', earliest_submission,
+                    'latest_processing', latest_processing
+                  ),
+                  'task_instances', json_build_object(
+                    'total_used', total_instances_used,
+                    'used_in_period', recent_instances_used
+                  )
+                ))
+              END,
+              '[]'::json
+            )
           ) as stats
         FROM study_metrics
       `;
@@ -247,11 +253,17 @@ router.get("/", async (req, res) => {
       // Get the basic stats
       const stats = basicMetricsResult.rows[0].stats;
 
+      // Log the stats object for debugging
+      console.log("Stats object type:", typeof stats);
+      console.log("Stats by_study type:", typeof stats.by_study);
+      console.log("Stats by_study is array:", Array.isArray(stats.by_study));
+      console.log("Stats by_study value:", JSON.stringify(stats.by_study));
+
       // Add this check before iterating over stats.by_study
-      if (!stats.by_study || typeof stats.by_study !== "object") {
+      if (!stats.by_study || !Array.isArray(stats.by_study)) {
         console.log(
-          "Warning: stats.by_study is not iterable:",
-          basicMetricsResult
+          "Warning: stats.by_study is not an array:",
+          JSON.stringify(stats)
         );
         stats.by_study = []; // Convert to empty array to prevent errors
       }
@@ -261,13 +273,12 @@ router.get("/", async (req, res) => {
       const submissionsMap = {};
 
       // Process each study individually
-      if (stats.by_study) {
-        for (const study of stats.by_study) {
-          const studyId = study.study_id;
+      for (const study of stats.by_study) {
+        const studyId = study.study_id;
 
-          try {
-            // Get date range for this study
-            const dateRangeQuery = `
+        try {
+          // Get date range for this study
+          const dateRangeQuery = `
             SELECT 
               MIN(utl.submission_time) as earliest_date,
               MAX(utl.submission_time) as latest_date,
@@ -278,33 +289,33 @@ router.get("/", async (req, res) => {
             WHERE u.study_id = $1
           `;
 
-            const dateRangeResult = await pool.query(dateRangeQuery, [studyId]);
+          const dateRangeResult = await pool.query(dateRangeQuery, [studyId]);
 
-            if (dateRangeResult.rows.length > 0) {
-              const row = dateRangeResult.rows[0];
-              let timeAggregation = "day";
-              const dateRangeDays = parseFloat(row.date_range_days || 0);
+          if (dateRangeResult.rows.length > 0) {
+            const row = dateRangeResult.rows[0];
+            let timeAggregation = "day";
+            const dateRangeDays = parseFloat(row.date_range_days || 0);
 
-              // Determine appropriate aggregation based on date range
-              if (dateRangeDays > 365) {
-                timeAggregation = "month";
-              } else if (dateRangeDays > 60) {
-                timeAggregation = "week";
-              }
+            // Determine appropriate aggregation based on date range
+            if (dateRangeDays > 365) {
+              timeAggregation = "month";
+            } else if (dateRangeDays > 60) {
+              timeAggregation = "week";
+            }
 
-              studyAggregationMap[studyId] = {
-                timeAggregation,
-                dateRangeDays,
-                earliestDate: row.earliest_date,
-                latestDate: row.latest_date,
-              };
+            studyAggregationMap[studyId] = {
+              timeAggregation,
+              dateRangeDays,
+              earliestDate: row.earliest_date,
+              latestDate: row.latest_date,
+            };
 
-              console.log(
-                `Study ${studyId} has date range of ${dateRangeDays} days, using ${timeAggregation} aggregation`
-              );
+            console.log(
+              `Study ${studyId} has date range of ${dateRangeDays} days, using ${timeAggregation} aggregation`
+            );
 
-              // Get submissions data with appropriate aggregation
-              const submissionsQuery = `
+            // Get submissions data with appropriate aggregation
+            const submissionsQuery = `
               SELECT 
                 DATE_TRUNC('${timeAggregation}', utl.submission_time)::date as aggregated_date,
                 COUNT(DISTINCT utl.task_log_id) as submission_count
@@ -316,32 +327,22 @@ router.get("/", async (req, res) => {
               ORDER BY aggregated_date
             `;
 
-              const submissionsResult = await pool.query(submissionsQuery, [
-                studyId,
-              ]);
+            const submissionsResult = await pool.query(submissionsQuery, [
+              studyId,
+            ]);
 
-              // Format the submissions data
-              submissionsMap[studyId] = submissionsResult.rows.map((row) => ({
-                date: row.aggregated_date,
-                count: parseInt(row.submission_count),
-                aggregation: timeAggregation,
-              }));
+            // Format the submissions data
+            submissionsMap[studyId] = submissionsResult.rows.map((row) => ({
+              date: row.aggregated_date,
+              count: parseInt(row.submission_count),
+              aggregation: timeAggregation,
+            }));
 
-              console.log(
-                `Study ${studyId} submissions data:`,
-                JSON.stringify(submissionsMap[studyId])
-              );
-            } else {
-              studyAggregationMap[studyId] = {
-                timeAggregation: "day",
-                dateRangeDays: 0,
-                earliestDate: null,
-                latestDate: null,
-              };
-              submissionsMap[studyId] = [];
-            }
-          } catch (studyError) {
-            console.error(`Error processing study ${studyId}:`, studyError);
+            console.log(
+              `Study ${studyId} submissions data:`,
+              JSON.stringify(submissionsMap[studyId])
+            );
+          } else {
             studyAggregationMap[studyId] = {
               timeAggregation: "day",
               dateRangeDays: 0,
@@ -350,20 +351,45 @@ router.get("/", async (req, res) => {
             };
             submissionsMap[studyId] = [];
           }
+        } catch (studyError) {
+          console.error(`Error processing study ${studyId}:`, studyError);
+          studyAggregationMap[studyId] = {
+            timeAggregation: "day",
+            dateRangeDays: 0,
+            earliestDate: null,
+            latestDate: null,
+          };
+          submissionsMap[studyId] = [];
         }
       }
 
       // Add submissions data and aggregation info to each study
-      if (stats.by_study) {
+      if (stats.by_study && Array.isArray(stats.by_study)) {
         stats.by_study.forEach((study) => {
           const studyId = study.study_id;
-          study.submissions_by_day = submissionsMap[studyId] || [];
+
+          // Ensure submissions_by_day is always an array
+          if (
+            !submissionsMap[studyId] ||
+            !Array.isArray(submissionsMap[studyId])
+          ) {
+            console.log(
+              `Warning: submissionsMap[${studyId}] is not an array, initializing as empty array`
+            );
+            submissionsMap[studyId] = [];
+          }
+
+          study.submissions_by_day = submissionsMap[studyId];
 
           // Add aggregation info to the study
           if (studyAggregationMap[studyId]) {
             study.time_aggregation =
               studyAggregationMap[studyId].timeAggregation;
             study.date_range_days = studyAggregationMap[studyId].dateRangeDays;
+          } else {
+            // Ensure aggregation info is always present
+            study.time_aggregation = "day";
+            study.date_range_days = 0;
           }
         });
       }
@@ -381,14 +407,36 @@ router.get("/", async (req, res) => {
         Object.entries(aggregationCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ||
         "day";
 
-      res.status(200).json({
+      // Final validation before sending response
+      if (!stats.by_study || !Array.isArray(stats.by_study)) {
+        console.log(
+          "Final validation: stats.by_study is not an array, setting to empty array"
+        );
+        stats.by_study = [];
+      }
+
+      // Ensure each study has the required properties
+      stats.by_study.forEach((study, index) => {
+        if (
+          !study.submissions_by_day ||
+          !Array.isArray(study.submissions_by_day)
+        ) {
+          console.log(
+            `Final validation: study at index ${index} has invalid submissions_by_day, setting to empty array`
+          );
+          study.submissions_by_day = [];
+        }
+      });
+
+      // Send the response
+      res.json({
         success: true,
         data: {
-          ...stats,
+          overall: stats.overall,
+          by_study: stats.by_study,
           period_days: days,
           cutoff_date: cutoffDate.toISOString(),
           time_aggregation: overallAggregation,
-          study_aggregations: studyAggregationMap,
         },
       });
     } catch (error) {
